@@ -9,6 +9,26 @@ import itertools
 from multiprocessing import Pool
 from scipy.fft import fft
 
+def get_wc_stats(tc, fsample):
+    """
+    Analysis the time course of the wc-signal
+    """
+    # Get Outpus stats
+    # Get min values
+    max_val = np.max(tc)
+    min_val = np.min(tc)
+    # Get avg value
+    avg_value = np.mean(tc)
+    # Get max freq greater than 0
+    timepoints = len(tc)
+    exc_f = fft(tc)
+    exc_f = 2.0/timepoints * np.abs(exc_f[0:int(timepoints/2)])
+    freqs = np.linspace(0.0, (1.0/2.0)*fsample, int(timepoints/2))
+    freqs = freqs[exc_f>1e-2]
+    max_freq = freqs[-1]
+    stats = [max_val, min_val, avg_value, max_freq]
+    return stats
+
 def evaluate_wc(params):
     """
     Function to run wc model with parameter settings
@@ -27,21 +47,10 @@ def evaluate_wc(params):
     wc.run()
     exc_tc = wc.outputs.exc[0,100:]
     inh_tc = wc.outputs.inh[0,100:]
-    # Get Outpus stats
-    # Get min values
-    max_val = np.max(exc_tc)
-    min_val = np.min(exc_tc)
-    # Get avg value
-    avg_value = np.mean(exc_tc)
-    # Get max freq greater than 0
-    exc_f = fft(exc_tc)
-    exc_f = 2.0/timepoints * np.abs(exc_f[0:int(timepoints/2)])
-    freqs = np.linspace(0.0, (1.0/2.0)*fsample, int(timepoints/2))
-    freqs = freqs[exc_f>1e-1]
-    max_freq = freqs[-1]
-    return (max_val, min_val, avg_value, max_freq)
+    stats = get_wc_stats(exc_tc, fsample)
+    return stats
 
-def plot_4_params():
+def plot_4_params(resolution):
     """
     Function to plot the effect of 
     """
@@ -49,30 +58,27 @@ def plot_4_params():
     nr_noise_levels = 1
     noise_levels = np.linspace(0.00,0.01,nr_noise_levels)
     # NMDA Parameters
-    nr_parameter_levels = 2
+    nr_parameter_levels = resolution
     exc_inputs = np.linspace(0.5, 1, nr_parameter_levels)
     ei_couplings = np.linspace(9, 18, nr_parameter_levels)[::-1]
     # Gaba Parameters
     ii_couplings = np.linspace(0, 5, nr_parameter_levels)[::-1]
     ie_couplings = np.linspace(9, 18, nr_parameter_levels)
     pdf = PdfPages('testing2.pdf')
+    
     # Noise loop
     for noise_level in noise_levels:
         # Set up figures
-        diff_fig, diff_axes = plt.subplots(nr_parameter_levels, nr_parameter_levels, figsize=(15,15))
-        diff_fig.suptitle(f'Max-Min Difference, Noise Level: {noise_level}', fontsize=25)
-        fl_diff_ax = diff_axes.ravel()
-        diff_cbar = diff_fig.add_axes([.92, 0.15, .03, 0.7])
-
-        avg_fig, avg_axes = plt.subplots(nr_parameter_levels, nr_parameter_levels, figsize=(15,15))
-        avg_fig.suptitle(f'Maximal Frequency, Noise Level: {noise_level}', fontsize=25)
-        fl_avg_ax = avg_axes.ravel()
-        avg_cbar = avg_fig.add_axes([.92, 0.15, .03, 0.7])
-        
-        freq_fig, freq_axes = plt.subplots(nr_parameter_levels, nr_parameter_levels, figsize=(15,15))
-        freq_fig.suptitle(f'Maximal Frequency, Noise Level: {noise_level}', fontsize=25)
-        fl_freq_ax = freq_axes.ravel()
-        freq_cbar = freq_fig.add_axes([.92, 0.15, .03, 0.7])
+        fig_list = []; axes_list = []; cbar_list = []
+        fig_names = ['Maximum Value', 'Minimum Value', 'Average Value', 'Maximum Frequence']       
+        for fig_name in fig_names:
+            fig, axes = plt.subplots(nr_parameter_levels, nr_parameter_levels, figsize=(15,15))
+            fig.suptitle(f'{fig_name}, Noise Level: {noise_level}', fontsize=25)
+            fl_ax = axes.ravel()
+            cbar = fig.add_axes([.92, 0.15, .03, 0.7])
+            fig.text(0.5, 0.04, 'Baseline Excitation', ha='center', fontsize=20)
+            fig.text(0.04, 0.5, 'E-I Coupling', va='center', rotation='vertical', fontsize=20)
+            fig_list.append(fig); axes_list.append(fl_ax); cbar_list.append(cbar)
 
         # Loop over NMDA parameters
         for m, (ei_c, e_input) in enumerate(itertools.product(ei_couplings, exc_inputs)):
@@ -90,37 +96,35 @@ def plot_4_params():
             min_mat.ravel()[:] = min_values
             avg_mat.ravel()[:] = avg_values
             freq_mat.ravel()[:] = max_freq
-            diff_mat = max_mat-min_mat
             
             # Plot heatmap of diff and freq mat
-            sns.heatmap(diff_mat, ax=fl_diff_ax[m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else diff_cbar)
-            sns.heatmap(avg_mat, ax=fl_avg_ax[m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else diff_cbar)
-            sns.heatmap(freq_mat, ax=fl_freq_ax[m], center=40, vmin=1, vmax=80, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else freq_cbar)
+            sns.heatmap(max_mat, ax=axes_list[0][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[0])
+            sns.heatmap(min_mat, ax=axes_list[1][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[1])
+            sns.heatmap(avg_mat, ax=axes_list[2][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[2])           
+            sns.heatmap(freq_mat, ax=axes_list[3][m], center=40, vmin=1, vmax=80, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[3])
             
             # Configure axes
-            for ax in [fl_diff_ax, fl_freq_ax, fl_avg_ax]:            
-                ax[m].set_ylabel(f'E-I Coupl.: {np.round(ei_c, 2)}', labelpad=20, fontsize=15)
-                ax[m].set_xlabel(f'Baseline Excitation: {np.round(e_input,2)}', labelpad=20, fontsize=15)
+            for ax in axes_list:            
+                ax[m].set_ylabel(f'E-I: {np.round(ei_c, 2)}', labelpad=20, fontsize=15)
+                ax[m].set_xlabel(f'Base.: {np.round(e_input,2)}', labelpad=20, fontsize=15)
                 ax[m].set_xticks(np.arange(0,nr_parameter_levels)+0.5)
                 ax[m].set_yticks(np.arange(0,nr_parameter_levels)+0.5)
                 ax[m].set_xticklabels([str(np.round(ie_c,1)) for ie_c in ie_couplings])
                 ax[m].set_yticklabels([str(np.round(ii_c,1)) for ii_c in ii_couplings])
         
         # Configure colorbar 
-        for cbar in [diff_cbar, freq_cbar, avg_cbar]:
+        for cbar in cbar_list:
             cbar.tick_params(labelsize=10, left=False, labelleft=False, right=True, labelright=True)
-            #cbar.yaxis.set_major_locator(plt.MaxNLocator(4))
         
         # Hide x labels and tick labels for top plots and y ticks for right plots.
-        for axes in [fl_diff_ax, fl_freq_ax, fl_avg_ax]:
+        for axes in axes_list:
             for ax in axes:
                 ax.label_outer()
 
         # Save to pdf page
-        pdf.savefig(diff_fig)
-        pdf.savefig(avg_fig)
-        pdf.savefig(freq_fig)
-    
+        for fig in fig_list:
+            pdf.savefig(fig)
+
     pdf.close()
 
 def plot_2_params(filename, **kwargs):
@@ -223,6 +227,6 @@ def plot_nmda(resolution):
     plot_2_params(filename='NMDA', exc_ext=exc_inputs, c_excinh=ei_couplings)
 
 if __name__ == "__main__":
-    #plot_4_params()
-    plot_gaba(resolution=3)
+    plot_4_params(10)
+    #plot_gaba(resolution=3)
     #plot_nmda(resolution=2)
