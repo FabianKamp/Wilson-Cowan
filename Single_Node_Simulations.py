@@ -53,7 +53,7 @@ def evaluate_wc(params):
     stats = get_wc_stats(exc_tc, fsample)
     return stats
 
-def plot_4_params(resolution):
+def plot_4_params(filename, resolution):
     """
     Function to plot the effect of 
     """
@@ -67,7 +67,7 @@ def plot_4_params(resolution):
     # Gaba Parameters
     ii_couplings = np.linspace(0, 5, nr_parameter_levels)[::-1]
     ie_couplings = np.linspace(9, 18, nr_parameter_levels)
-    pdf = PdfPages('testing2.pdf')
+    pdf = PdfPages(filename)
    
     # Noise loop
     for noise_level in noise_levels:
@@ -243,7 +243,7 @@ def plot_nmda(resolution):
 
 if __name__ == "__main__":
     start = time()
-    #plot_4_params(5)
+    #plot_4_params('testing.pdf',5)
     plot_gaba(resolution=5)
     #plot_nmda(resolution=2)
     end = time()
