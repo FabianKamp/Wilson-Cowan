@@ -10,29 +10,34 @@ from multiprocessing import Pool
 from scipy.fft import fft
 from time import time 
 
+def get_spectrum(tc, fsample):
+    """
+    Compute frequency spectrum using scipy.fft
+    """
+    timepoints = len(tc)
+    spect = fft(tc)
+    spect[0] = 0
+    spect = 2.0/timepoints * np.abs(spect[0:int(timepoints/2)])
+    freqs = np.linspace(0.0, (1.0/2.0)*fsample, int(timepoints/2))    
+    return spect, freqs
+
 def get_wc_stats(tc, fsample):
     """
     Analysis the time course of the wc-signal
     """
     # Get Outpus stats
-    # Get min values
+    # Get min/max values
     max_val = np.max(tc)
     min_val = np.min(tc)
     # Get avg value
     diff = max_val - min_val
     # Get max freq greater than 0
-    #tc -= np.mean(tc)
-    timepoints = len(tc)
-    exc_f = fft(tc)
-    exc_f = 2.0/timepoints * np.abs(exc_f[0:int(timepoints/2)])
-    freqs = np.linspace(0.0, (1.0/2.0)*fsample, int(timepoints/2))
-    max_freq = freqs[exc_f>1e-3][-1]
-    # Gamma power for range 30 - 46
-    gamma_power = np.sum(exc_f[(freqs>=30) & (freqs<=46)])
-    stats = [max_val, min_val, diff, gamma_power, max_freq]
+    spect, freqs = get_spectrum(tc, fsample)
+    max_freq = freqs[spect==np.max(spect)]
+    stats = [max_val, min_val, avg_value, max_freq]
     return stats
 
-def evaluate_wc(params):
+def evaluate_wc(params, stats=True):
     """
     Function to run wc model with parameter settings
     """
@@ -41,17 +46,63 @@ def evaluate_wc(params):
     # Initialize the Wilson Cohan model
     wc = WCModel() 
     # Set the duration parameter two second
-    timepoints = 2.*1000
-    fsample = 1000.
-    wc.params['duration'] = timepoints
+    time = 2.*1000
+    fsample = 10000.
+    wc.params['duration'] = time
     # Run model with parameter setting
     for key, value in params.items():
         wc.params[key] = value
     wc.run()
-    exc_tc = wc.outputs.exc[0,100:]
-    inh_tc = wc.outputs.inh[0,100:]
-    stats = get_wc_stats(exc_tc, fsample)
-    return stats
+    exc_tc = wc.outputs.exc[0,:]
+    inh_tc = wc.outputs.inh[0,:]
+    if stats: 
+        stats = get_wc_stats(exc_tc, fsample)
+        return stats
+    else:
+        spect, freq = get_spectrum(exc_tc, fsample)
+        return [exc_tc, inh_tc, spect, freq] 
+
+
+def plot_default_wc(filename, n_simulations):
+    e_inputs = np.linspace(0.45,1,n_simulations)
+    noise_levels = np.linspace(0,0.005,3)
+    pdf=PdfPages(filename)
+    for noise in noise_levels:
+        params = [({'exc_ext':[e_input], 'c_excinh':15, 'c_inhexc':12, 'c_inhinh':3, 'sigma_ou':noise}, False) for e_input in e_inputs]
+        with Pool(2) as p:
+            results = p.starmap(evaluate_wc, params)
+
+        for e_input, result in zip(e_inputs, results):
+            # Set up figure using gridspec
+            fig = plt.figure(figsize=(16,6))
+            fig.suptitle(f'Noise Level = {noise}, Baseline Exc. Input = {np.round(e_input,2)}')
+            gs = fig.add_gridspec(1, 4)
+ 
+            # Plot Wilson Cowan Simulation
+            with sns.axes_style('ticks'):
+                ax1 = fig.add_subplot(gs[0, :-1])
+                end = len(result[0])//2
+                ax1.plot(result[0][:end]); ax1.plot(result[1][:end])
+                ax1.set_title('Wilson-Cowan Simulation')
+                ax1.set_ylim(0,0.38)
+                ax1.xaxis.set_major_formatter(plt.FuncFormatter(lambda val, nr: int(val/10)))
+                ax1.set_xlabel('Time [ms]', labelpad = 10)
+                sns.despine(trim=True, ax=ax1, offset=10)
+
+            # Plot Freq-Spectrum
+            with sns.axes_style('whitegrid'):
+                ax2 = fig.add_subplot(gs[0,-1])
+                ax2.plot(result[3][:1000], result[2][:1000])
+                ax2.set_title('Frequency Spectrum')
+                ax2.set_xlabel('Frequency')
+                ax2.set_ylim(0,0.122)
+                sns.despine(ax=ax2)
+
+            pdf.savefig(fig)
+            plt.close()
+    pdf.close()
+
+
 
 def plot_4_params(filename, resolution):
     """
