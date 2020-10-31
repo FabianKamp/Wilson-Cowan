@@ -8,6 +8,7 @@ import seaborn as sns
 import itertools
 from multiprocessing import Pool
 from scipy.fft import fft
+from time import time 
 
 def get_spectrum(tc, fsample):
     """
@@ -29,7 +30,7 @@ def get_wc_stats(tc, fsample):
     max_val = np.max(tc)
     min_val = np.min(tc)
     # Get avg value
-    avg_value = np.mean(tc)
+    diff = max_val - min_val
     # Get max freq greater than 0
     spect, freqs = get_spectrum(tc, fsample)
     max_freq = freqs[spect==np.max(spect)]
@@ -108,7 +109,7 @@ def plot_4_params(resolution):
     Function to plot the effect of 
     """
     # Noise Parameters
-    nr_noise_levels = 1
+    nr_noise_levels = 5
     noise_levels = np.linspace(0.00,0.01,nr_noise_levels)
     # NMDA Parameters
     nr_parameter_levels = resolution
@@ -118,12 +119,15 @@ def plot_4_params(resolution):
     ii_couplings = np.linspace(0, 5, nr_parameter_levels)[::-1]
     ie_couplings = np.linspace(9, 18, nr_parameter_levels)
     pdf = PdfPages('testing2.pdf')
-    
+   
     # Noise loop
     for noise_level in noise_levels:
+        print(f'Simulation with noise level {noise_level} started.')
         # Set up figures
         fig_list = []; axes_list = []; cbar_list = []
-        fig_names = ['Maximum Value', 'Minimum Value', 'Average Value', 'Maximum Frequence']       
+        
+        # fig names must correspond to the values computed in get_wc_stats
+        fig_names = ['Maximum Value', 'Minimum Value', 'Max.-Min. Difference', 'Gamma Power', 'Maximum Frequence']       
         for fig_name in fig_names:
             fig, axes = plt.subplots(nr_parameter_levels, nr_parameter_levels, figsize=(15,15))
             fig.suptitle(f'{fig_name}, Noise Level: {noise_level}', fontsize=25)
@@ -135,26 +139,31 @@ def plot_4_params(resolution):
 
         # Loop over NMDA parameters
         for m, (ei_c, e_input) in enumerate(itertools.product(ei_couplings, exc_inputs)):
-            max_mat, min_mat, avg_mat, freq_mat=[np.zeros((nr_parameter_levels,nr_parameter_levels))]*4
+            # Set up matrix for wc stats
+            mats=[np.zeros((nr_parameter_levels,nr_parameter_levels)) for _ in range(len(fig_names))]
             
             # Sets up the parameter for simulation
             params = [{'exc_ext':[e_input], 'c_excinh':ei_c, 'c_inhexc':ie_c, 'c_inhinh':ii_c, 'sigma_ou':noise_level} 
             for ie_c, ii_c in itertools.product(ie_couplings, ii_couplings)]           
             
             # Runs the model in parallel over Gaba parameter 
-            with Pool(4) as p:
-                result = p.map(evaluate_wc, params)
-            max_values, min_values, avg_values, max_freq = list(zip(*result))                    
-            max_mat.ravel()[:] = max_values
-            min_mat.ravel()[:] = min_values
-            avg_mat.ravel()[:] = avg_values
-            freq_mat.ravel()[:] = max_freq
+            with Pool(25) as p:
+                stats = p.map(evaluate_wc, params)
             
-            # Plot heatmap of diff and freq mat
-            sns.heatmap(max_mat, ax=axes_list[0][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[0])
-            sns.heatmap(min_mat, ax=axes_list[1][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[1])
-            sns.heatmap(avg_mat, ax=axes_list[2][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[2])           
-            sns.heatmap(freq_mat, ax=axes_list[3][m], center=40, vmin=1, vmax=80, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[3])
+            # Re-zip the stats
+            stats = list(zip(*stats))
+            
+            for n, mat in enumerate(mats):
+                # Reshape stats                   
+                mat.ravel()[:] = stats[n]
+                # Plot heatmap of max, min, diff and gamma mats
+                if n < 3:
+                    sns.heatmap(mat, ax=axes_list[n][m], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[n])
+                elif n == 3: 
+                    sns.heatmap(mat, ax=axes_list[n][m], vmin=0, vmax=0.25, linewidths=.1, cmap="YlGnBu", cbar=m == 0, cbar_ax=None if m else cbar_list[n])
+                elif n > 3:  
+                    # Plot heatmap of freq max         
+                    sns.heatmap(mat, ax=axes_list[n][m], center=30, cmap="icefire", vmin=0, vmax=60, linewidths=.1, cbar=m == 0, cbar_ax=None if m else cbar_list[n])
             
             # Configure axes
             for ax in axes_list:            
@@ -202,17 +211,21 @@ def plot_2_params(filename, **kwargs):
     p2_range = p2_range[::-1]
 
     # Noise Parameters
-    nr_noise_levels = 1
+    nr_noise_levels = 5
     noise_levels = np.linspace(0.00,0.01,nr_noise_levels)
 
     pdf = PdfPages(filename)
     # Noise loop
     for noise_level in noise_levels:
-        # Set up figures
-        fig, axes = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(14,12))
+        # Set up figure
+        fig = plt.figure(figsize=(18,12))
+        gs = fig.add_gridspec(2, 3)
+        #fig, axes = plt.subplots(2, 3, sharex=True, sharey=True, figsize=(14,12))
+        axes = [fig.add_subplot(gs[n,m]) for n in range(2) for m in range(3) if (n,m) != (1,2)]
+        titles = ['Maximum Value', 'Minimum Value', 'Max.-Min. Difference', 'Gamma Power', 'Maximum Frequence']
         
         # Init result matrices
-        max_mat, min_mat, avg_mat, freq_mat = [np.zeros((len(p1_range),len(p2_range))) for _ in range(4)]
+        mats = [np.zeros((len(p1_range),len(p2_range))) for _ in range(len(titles))]
 
         # Sets up the parameter dictionaries for simulation
         params = []
@@ -221,31 +234,31 @@ def plot_2_params(filename, **kwargs):
             params.append(param_dict.copy())
             
         # Runs the model in parallel over Gaba parameter 
-        with Pool(5) as p:
-            result = p.map(evaluate_wc, params)
-        max_values, min_values, avg_values, max_freq = list(zip(*result))                    
-        
-        max_mat.ravel()[:] = max_values
-        min_mat.ravel()[:] = min_values
-        avg_mat.ravel()[:] = avg_values
-        freq_mat.ravel()[:] = max_freq
-            
-        # Plot heatmap of diff and freq mat
-        sns.heatmap(max_mat, ax=axes.ravel()[0], vmin=0, vmax=0.5, linewidths=.1, cmap='YlGnBu', cbar=True)
-        sns.heatmap(min_mat, ax=axes.ravel()[1], vmin=0, vmax=0.5, linewidths=.1, cmap='YlGnBu', cbar=True)
-        sns.heatmap(avg_mat, ax=axes.ravel()[2], vmin=0, vmax=0.5, linewidths=.1, cmap='YlGnBu', cbar=True)
-        sns.heatmap(freq_mat, ax=axes.ravel()[3], vmin=0, vmax=80, center=40, linewidths=.1, cbar=True)
+        with Pool(25) as p:
+            stats = p.map(evaluate_wc, params)
+        stats = list(zip(*stats))                    
+               
+        for n, mat in enumerate(mats):
+            # Reshape stats                   
+            mat.ravel()[:] = stats[n]
+            # Plot heatmap of max, min, diff and gamma mats
+            if n < 3:
+                sns.heatmap(mat, ax=axes[n], vmin=0, vmax=0.5, linewidths=.1, cmap="YlGnBu", cbar=True)
+            elif n == 3: 
+                sns.heatmap(mat, ax=axes[n], vmin=0, vmax=0.25, linewidths=.1, cmap="YlGnBu", cbar=True)
+            elif n > 3:  
+                # Plot heatmap of freq max         
+                sns.heatmap(mat, ax=axes[n], center=30, cmap="icefire", vmin=0, vmax=60, linewidths=.1, cbar=True)
 
         # Set axes titles and configure axes
-        titles = ['Max. Value', 'Min. Value', 'Avg. Value', 'Max. Frequency']
-        for ax, title in zip(axes.ravel(), titles): 
+        for ax, title in zip(axes, titles): 
             ax.set_title(title)
             ax.set_xticks(np.arange(len(p1_range))+0.5)
             ax.set_yticks(np.arange(len(p2_range))+0.5)
             ax.set_xticklabels([str(np.round(p,1)) for p in p1_range])
             ax.set_yticklabels([str(np.round(p,1)) for p in p2_range])
         
-        # Set title
+        # Set title that contains fixed parameters
         title = ''
         for key, value in param_dict.items():
             if key not in [p1, p2]:
@@ -284,3 +297,5 @@ if __name__ == "__main__":
     #plot_4_params(10)
     #plot_gaba(resolution=3)
     #plot_nmda(resolution=2)
+    end = time()
+    print('Time: ', end-start)
