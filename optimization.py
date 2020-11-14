@@ -32,12 +32,14 @@ class optimization():
             exclude = list(range(40,44)) + list(range(44,46)) + list(range(74,80)) + list(range(80,82))
             self.empMat = np.delete(self.empMat, exclude, axis=0)
             self.empMat = np.delete(self.empMat, exclude, axis=1)
-            print('FC Shape: ', self.empMat.shape)
 
         # Wilson Cowan Parameter Ranges that get optimized
         # Params that get optimized, keys must be equal to wc parameter names
-        self.ParamRanges = OrderedDict({'K_gl': [2, 5], 'signalV': [9,10], 'sigma_ou': [0.5, 1.]})          
-        
+        # NMDA Parameters: exc_ext, c_excinh
+        # Gaba Parameters: c_inhinh, c_inhexc
+        #self.ParamRanges = OrderedDict({'sigma_ou': [0.001, 0.01], 'exc_ext':[0.5,0.75], 'c_excinh':[13.0,18.0], 'c_inhexc':[13.0,18.0], 'c_inhinh':[1.0,5.0]})          
+        self.ParamRanges = OrderedDict({'sigma_ou': [0.001, 0.01], 'c_excinh':[13.0, 18.0], 'c_inhexc':[13.0,18.0], 'c_inhinh':[1.0,5.0]})
+
         # Setup genetic algorithm and wc simulator
         self._setup_ga()
         self._setup_wc() 
@@ -49,10 +51,9 @@ class optimization():
         ds = Dataset("hcp")
         self.Dmat = ds.Dmat
         self.Cmat = ds.Cmat
-        print(self.Dmat.shape)
         # Wilson Cowan Params that stay fixed, keys must be equal to wc parameter names
         # Durationin milliseconds
-        self.fixedParams = {'duration':1*1000.0}
+        self.fixedParams = {'duration':2.0*1000}
         self.FreqBand = [8, 12]
         
     def _setup_ga(self):
@@ -62,18 +63,18 @@ class optimization():
         self.toolbox = base.Toolbox()
         self._initializePopulation()
         # genetic algorithm settings
-        self.NPop = 10
-        self.NGen = 10
-        self.CxPB = .3 # Crossing Over probability
-        self.MutPB = .5 # Mutation Probability
+        self.NPop = 20
+        self.NGen = 20
+        self.CxPB = .5 # Crossing Over probability
+        self.MutPB = .75 # Mutation Probability
         
         # Sigma of gaussian distribution with which attributes are mutated
-        self.MutSigma = [0.1,0.1,0.01]
+        self.MutSigma = [(up-low)/4 for low,up in self.ParamRanges.values()]
 
         # Define Size of elite, crossover and mutation list etc.
-        self.EliteSize = int(self.NPop * 0.2)
-        self.CrossSize = int(self.NPop * 0.3)
-        self.MutSize = int(self.NPop * 0.3)
+        self.EliteSize = int(self.NPop * 0.1)
+        self.CrossSize = int(self.NPop * 0.4)
+        self.MutSize = int(self.NPop * 0.4)
         self.RestSize = int(self.NPop * 0.1)
 
         # Genetic Operations
@@ -125,10 +126,10 @@ class optimization():
         self.pop = self.toolbox.population(n=self.NPop)
 
         # Compute Wilson Cowan Model for each individual
-        with Pool(processes=2) as p:
+        with Pool(processes=20) as p:
             wc_results = p.map(self.toolbox.model, self.pop)
             fitnesses = p.map(self.getFit, wc_results)
-        print(fitnesses)
+
         # Assign fitness value to each individual in the pop
         for ind, fit in zip(self.pop, fitnesses):
             ind.fitness.values = (fit,)  
@@ -181,7 +182,7 @@ class optimization():
             invalid_ind = [ind for ind in self.pop if not ind.fitness.valid]
 
             # Reevaluate the fitness of offspring
-            with Pool(processes=2) as p:
+            with Pool(processes=20) as p:
                 wc_results = p.map(self.toolbox.model, invalid_ind)
                 fitnesses = p.map(self.getFit, wc_results)
 
@@ -191,6 +192,7 @@ class optimization():
 
             fits = [ind.fitness.values[0] for ind in self.pop]
             print('Mean Fits: ', np.mean(fits))
+            print('Max Fit: ', np.max(fits), '\nParameters: ', self.pop[np.argmax(fits)])
         
     def applyCrossover(self, Individuals):
         """
@@ -228,6 +230,16 @@ class optimization():
         and caclulates the matrix
         """
         wc = WCModel(Cmat = self.Cmat, Dmat = self.Dmat)
+        # set fix parameter 
+        for key, parameter in self.fixedParams.items():
+            wc.params[key] = parameter
+        # set individual parameter
+        for key, parameter in zip(self.ParamRanges.keys(), params):
+            if key == 'exc_ext':
+                wc.params[key] = [parameter] * wc.params['N']
+            wc.params[key] = parameter
+        #raise Exception('stop')
+        # run model
         wc.run(chunkwise=True, append=True)
         # get exc_time courses 
         exc_tc = wc.outputs.exc
