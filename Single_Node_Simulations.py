@@ -34,7 +34,8 @@ def get_wc_stats(tc, fsample):
     # Get max freq greater than 0
     spect, freqs = get_spectrum(tc, fsample)
     max_freq = freqs[spect==np.max(spect)]
-    stats = [max_val, min_val, avg_value, max_freq]
+    gamma = np.sum(spect[(freqs>=30) & (freqs<=46)])
+    stats = [max_val, min_val, diff, gamma, max_freq]
     return stats
 
 def evaluate_wc(params, stats=True):
@@ -53,8 +54,8 @@ def evaluate_wc(params, stats=True):
     for key, value in params.items():
         wc.params[key] = value
     wc.run()
-    exc_tc = wc.outputs.exc[0,:]
-    inh_tc = wc.outputs.inh[0,:]
+    exc_tc = wc.outputs.exc[0,100:]
+    inh_tc = wc.outputs.inh[0,100:]
     if stats: 
         stats = get_wc_stats(exc_tc, fsample)
         return stats
@@ -102,14 +103,12 @@ def plot_default_wc(filename, n_simulations):
             plt.close()
     pdf.close()
 
-
-
 def plot_4_params(filename, resolution):
     """
     Function to plot the effect of 
     """
     # Noise Parameters
-    nr_noise_levels = 5
+    nr_noise_levels = 3
     noise_levels = np.linspace(0.00,0.01,nr_noise_levels)
     # NMDA Parameters
     nr_parameter_levels = resolution
@@ -142,7 +141,7 @@ def plot_4_params(filename, resolution):
             # Set up matrix for wc stats
             mats=[np.zeros((nr_parameter_levels,nr_parameter_levels)) for _ in range(len(fig_names))]
             
-            # Sets up the parameter for simulation
+            # Sets up the parameter for simulation, list of dicts with changing Gaba params
             params = [{'exc_ext':[e_input], 'c_excinh':ei_c, 'c_inhexc':ie_c, 'c_inhinh':ii_c, 'sigma_ou':noise_level} 
             for ie_c, ii_c in itertools.product(ie_couplings, ii_couplings)]           
             
@@ -154,7 +153,7 @@ def plot_4_params(filename, resolution):
             stats = list(zip(*stats))
             
             for n, mat in enumerate(mats):
-                # Reshape stats                   
+                # Reshape stats, each stat contain mat of one statistic                   
                 mat.ravel()[:] = stats[n]
                 # Plot heatmap of max, min, diff and gamma mats
                 if n < 3:
@@ -294,7 +293,7 @@ def plot_nmda(resolution):
 
 if __name__ == "__main__":
     start = time()
-    #plot_4_params('testing.pdf',5)
+    plot_4_params('WC_All-Params-Var.pdf',5)
     plot_gaba(resolution=5)
     #plot_nmda(resolution=2)
     end = time()
