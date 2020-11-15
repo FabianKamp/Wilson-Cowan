@@ -3,6 +3,7 @@ import random
 from multiprocessing import Pool
 import numpy as np
 from time import time
+import time
 from collections import OrderedDict
 from neurolib.utils.loadData import Dataset
 from neurolib.models.wc import WCModel
@@ -20,7 +21,9 @@ class optimization():
         self.method = method  
         # Load empirical Data
         self.empMat = np.load(DataFile)
-        
+        self.lowpass = 0.2
+
+
         if method == 'FC':
             # Delete subcortical regions: 
                 #Hippocampus: 41 - 44
@@ -38,7 +41,7 @@ class optimization():
         # NMDA Parameters: exc_ext, c_excinh
         # Gaba Parameters: c_inhinh, c_inhexc
         #self.ParamRanges = OrderedDict({'sigma_ou': [0.001, 0.01], 'exc_ext':[0.5,0.75], 'c_excinh':[13.0,18.0], 'c_inhexc':[13.0,18.0], 'c_inhinh':[1.0,5.0]})          
-        self.ParamRanges = OrderedDict({'sigma_ou': [0.001, 0.01], 'c_excinh':[13.0, 18.0], 'c_inhexc':[13.0,18.0], 'c_inhinh':[1.0,5.0]})
+        self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'exc_ext':[0.45,0.9]})
 
         # Setup genetic algorithm and wc simulator
         self._setup_ga()
@@ -52,9 +55,13 @@ class optimization():
         self.Dmat = ds.Dmat
         self.Cmat = ds.Cmat
         # Wilson Cowan Params that stay fixed, keys must be equal to wc parameter names
-        # Durationin milliseconds
-        self.fixedParams = {'duration':2.0*1000}
+        # Time in milliseconds
+        self.simdt = 1.
+        self.simfsample = (1./self.simdt) * 1000
+        self.fixedParams = {'duration':2.0*60.0*1000, 'dt':self.simdt}
         self.FreqBand = [8, 12]
+        self.simdt = 0.001
+        self.simfsample = 1./self.simdt
         
     def _setup_ga(self):
         """
@@ -63,9 +70,9 @@ class optimization():
         self.toolbox = base.Toolbox()
         self._initializePopulation()
         # genetic algorithm settings
-        self.NPop = 20
-        self.NGen = 20
-        self.CxPB = .5 # Crossing Over probability
+        self.NPop = 30
+        self.NGen = 10
+        self.CxPB = .75 # Crossing Over probability
         self.MutPB = .75 # Mutation Probability
         
         # Sigma of gaussian distribution with which attributes are mutated
@@ -73,16 +80,16 @@ class optimization():
 
         # Define Size of elite, crossover and mutation list etc.
         self.EliteSize = int(self.NPop * 0.1)
-        self.CrossSize = int(self.NPop * 0.4)
-        self.MutSize = int(self.NPop * 0.4)
-        self.RestSize = int(self.NPop * 0.1)
+        self.CrossSize = int(self.NPop * 0.2)
+        self.MutSize = int(self.NPop * 0.3)
+        self.RestSize = int(self.NPop * 0.3)
 
         # Genetic Operations
         # Register genetic operators with default arguments in toolbox
         self.toolbox.register("model", self._parallel_wc) 
         self.toolbox.register("select", tools.selBest)                  
-        self.toolbox.register("mutate", tools.mutGaussian)                      
-        self.toolbox.register("mate", tools.cxUniform)          
+        self.toolbox.register("mutate", tools.mutGaussian, sigma=self.MutSigma, indpb=0.5)                      
+        self.toolbox.register("mate", tools.cxUniform, indpb=0.5)          
 
     def _initializePopulation(self):
         """
@@ -111,7 +118,7 @@ class optimization():
         """
         RandParams = []
         for Range in ParamRanges.values():
-            rparameter = np.round(random.uniform(Range[0], Range[1]),2)
+            rparameter = np.round(random.uniform(Range[0], Range[1]),4)
             RandParams.append(rparameter)
         Individual = individual(RandParams)
         return Individual
@@ -121,11 +128,11 @@ class optimization():
         Main Function. Fits/optimizes the wilson cowan model with respect
         to the empirical data
         """
-        print('Started Opimization.')
+        print('Started Optimization.')
         # Create the Population with n individuals
         self.pop = self.toolbox.population(n=self.NPop)
 
-        # Compute Wilson Cowan Model for each individual
+        # Compute Wilson Cowan Model for individuals in initial population
         with Pool(processes=20) as p:
             wc_results = p.map(self.toolbox.model, self.pop)
             fitnesses = p.map(self.getFit, wc_results)
@@ -135,7 +142,9 @@ class optimization():
             ind.fitness.values = (fit,)  
 
         fits = [ind.fitness.values[0] for ind in self.pop]
-        print(np.mean(fits))
+        print('Initial Mean Fit: ', np.mean(fits))
+        print('Initial Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
+        print('Initial Pop: ', self.pop)
 
         for Generation in range(self.NGen):
             # Each iteration is a new generation
@@ -191,8 +200,9 @@ class optimization():
                 ind.fitness.values = (fit,)
 
             fits = [ind.fitness.values[0] for ind in self.pop]
-            print('Mean Fits: ', np.mean(fits))
-            print('Max Fit: ', np.max(fits), '\nParameters: ', self.pop[np.argmax(fits)])
+            print('Mean Fit: ', np.mean(fits))
+            print('Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
+            print('Population: ', self.pop)
         
     def applyCrossover(self, Individuals):
         """
@@ -201,10 +211,11 @@ class optimization():
         """
         children = []
         for ind1, ind2 in zip(Individuals[::2], Individuals[1::2]):
-            (child1, child2) = self.toolbox.mate(ind1, ind2, self.CxPB)
-            del child1.fitness.values
-            del child2.fitness.values
-            children.extend([child1, child2])
+            if np.random.rand() < self.CxPB:
+                (child1, child2) = self.toolbox.mate(ind1, ind2)
+                del child1.fitness.values
+                del child2.fitness.values
+                children.extend([child1, child2])
         return children
 
     def applyMutation(self, Individuals):
@@ -214,39 +225,40 @@ class optimization():
         """
         mutants = []
         for mutant in Individuals:
-            # indpb is the probability for each attribute to be mutated
-            self.toolbox.mutate(mutant, 0, sigma=self.MutSigma, indpb=self.MutPB)
-            mutant[:] = np.round(mutant,2)
-            # Reset values that are outside ParamRange
-            mutant[:] = [value if low<=value<=up else min(max(value, low), up) 
-                        for (low, up), value in zip(self.ParamRanges.values(), mutant[:])]
-            del mutant.fitness.values            
-            mutants.append(mutant)
+            if np.random.rand() < self.MutPB:
+                # indpb is the probability for each attribute to be mutated
+                self.toolbox.mutate(mutant, 0)
+                mutant[:] = np.round(mutant,4)
+                # Reset values that are outside ParamRange
+                mutant[:] = [value if low<=value<=up else min(max(value, low), up) 
+                            for (low, up), value in zip(self.ParamRanges.values(), mutant[:])]
+                del mutant.fitness.values            
+                mutants.append(mutant)
         return mutants
 
     def _parallel_wc(self, params):
         """
         Runs the wilson cowan model. Filters it to the alpha frequency band
-        and caclulates the matrix
+        and caclulates the fitting matrix - FC or CCD
         """
         wc = WCModel(Cmat = self.Cmat, Dmat = self.Dmat)
         # set fix parameter 
         for key, parameter in self.fixedParams.items():
             wc.params[key] = parameter
         # set individual parameter
-        for key, parameter in zip(self.ParamRanges.keys(), params):
+        for key, value in zip(self.ParamRanges.keys(), params):
             if key == 'exc_ext':
-                wc.params[key] = [parameter] * wc.params['N']
-            wc.params[key] = parameter
-        #raise Exception('stop')
+                wc.params[key] = np.repeat(value, wc.params['N'])
+            else:
+                wc.params[key] = value
         # run model
         wc.run(chunkwise=True, append=True)
         # get exc_time courses 
         exc_tc = wc.outputs.exc
         # transform to signal
-        signal = Signal(exc_tc, fsample=10000)
+        signal = Signal(exc_tc, fsample=self.simfsample, lowpass=self.lowpass)
         # Calculate FC or CCD matrix on signal
-        mat = getattr(signal, 'get'+self.method)(Limits=self.FreqBand, conn_mode='corr')
+        mat = getattr(signal, 'get'+self.method)(Limits=self.FreqBand, conn_mode='lowpass-corr')
         return mat
 
     def getFit(self, simMat):
@@ -255,18 +267,22 @@ class optimization():
         """
         # Fit FC using correlation Coefficient between empirical and simulated Data
         if self.method == 'FC': 
-            rows = self.empMat.shape[-1]
+            # Calculate Correlation between empirical and simulated FC
+            simFC = simMat
+            empFC = self.empMat
+            
+            rows = empFC.shape[-1]
             idx = np.triu_indices(rows, k=1)
 
-            empValues = self.empMat[idx]
-            simValues = simMat[idx]
+            empValues = empFC[idx]
+            simValues = simFC[idx]
 
             corr, _ = scipy.stats.pearsonr(empValues, simValues)
             return corr
         
         # Fit CCD using KSD distance
         elif fitting == 'CCD': 
-            dist = self._getKSD(self.empMat, simMat)
+            dist = self._getKSD(self.empMat, simVal)
             return dist
     
     def _getKSD(self, simMat):

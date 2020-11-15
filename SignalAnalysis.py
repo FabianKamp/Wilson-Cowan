@@ -85,7 +85,9 @@ class Signal():
 		SignalEnv = np.abs(ComplexSignal)
 		
 		# If no conn_mode is specified, unorthogonalized FC is computed.
-		if conn_mode == 'corr':
+		if conn_mode in ['lowpass-corr', 'corr']:			
+			if 'lowpass' in conn_mode: 
+				SignalEnv = filter_data(SignalEnv, self.fsample, 0, self.lowpass, fir_window='hamming', verbose=False)			
 			FC = pearson(SignalEnv, SignalEnv)
 			return FC
 

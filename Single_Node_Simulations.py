@@ -112,7 +112,7 @@ def plot_4_params(filename, resolution):
     noise_levels = np.linspace(0.00,0.01,nr_noise_levels)
     # NMDA Parameters
     nr_parameter_levels = resolution
-    exc_inputs = np.linspace(0.5, 1, nr_parameter_levels)
+    exc_inputs = [0.5, 0.75]
     ei_couplings = np.linspace(9, 18, nr_parameter_levels)[::-1]
     # Gaba Parameters
     ii_couplings = np.linspace(0, 5, nr_parameter_levels)[::-1]
