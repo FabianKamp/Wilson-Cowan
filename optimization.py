@@ -22,8 +22,7 @@ class optimization():
         # Load empirical Data
         self.empMat = np.load(DataFile)
         self.lowpass = 0.2
-
-
+        
         if method == 'FC':
             # Delete subcortical regions: 
                 #Hippocampus: 41 - 44
@@ -31,7 +30,6 @@ class optimization():
                 #Basal Ganglia: 75-80
                 #Thalamus: 81-82
             # Attention: AAL indices start with 1
-
             exclude = list(range(40,44)) + list(range(44,46)) + list(range(74,80)) + list(range(80,82))
             self.empMat = np.delete(self.empMat, exclude, axis=0)
             self.empMat = np.delete(self.empMat, exclude, axis=1)
@@ -60,8 +58,6 @@ class optimization():
         self.simfsample = (1./self.simdt) * 1000
         self.fixedParams = {'duration':2.0*60.0*1000, 'dt':self.simdt}
         self.FreqBand = [8, 12]
-        self.simdt = 0.001
-        self.simfsample = 1./self.simdt
         
     def _setup_ga(self):
         """
@@ -70,26 +66,23 @@ class optimization():
         self.toolbox = base.Toolbox()
         self._initializePopulation()
         # genetic algorithm settings
-        self.NPop = 30
-        self.NGen = 10
+        self.NPopinit = 30
+        self.crossPortion = 0.4
+        self.mutPortion = 0.4
+        self.elitPortion = 0.1
         self.CxPB = .75 # Crossing Over probability
         self.MutPB = .75 # Mutation Probability
         
         # Sigma of gaussian distribution with which attributes are mutated
         self.MutSigma = [(up-low)/4 for low,up in self.ParamRanges.values()]
 
-        # Define Size of elite, crossover and mutation list etc.
-        self.EliteSize = int(self.NPop * 0.1)
-        self.CrossSize = int(self.NPop * 0.2)
-        self.MutSize = int(self.NPop * 0.3)
-        self.RestSize = int(self.NPop * 0.3)
-
         # Genetic Operations
         # Register genetic operators with default arguments in toolbox
         self.toolbox.register("model", self._parallel_wc) 
         self.toolbox.register("select", tools.selBest)                  
-        self.toolbox.register("mutate", tools.mutGaussian, sigma=self.MutSigma, indpb=0.5)                      
-        self.toolbox.register("mate", tools.cxUniform, indpb=0.5)          
+        self.toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=self.MutSigma, indpb=0.5)                      
+        self.toolbox.register("mate", tools.cxUniform, indpb=0.5)
+
 
     def _initializePopulation(self):
         """
@@ -129,8 +122,9 @@ class optimization():
         to the empirical data
         """
         print('Started Optimization.')
+        Generation = 0
         # Create the Population with n individuals
-        self.pop = self.toolbox.population(n=self.NPop)
+        self.pop = self.toolbox.population(n=self.NPopinit)
 
         # Compute Wilson Cowan Model for individuals in initial population
         with Pool(processes=20) as p:
@@ -142,55 +136,37 @@ class optimization():
             ind.fitness.values = (fit,)  
 
         fits = [ind.fitness.values[0] for ind in self.pop]
+        print(f"Generation {Generation}, size {len(self.pop)}")
         print('Initial Mean Fit: ', np.mean(fits))
         print('Initial Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
         print('Initial Pop: ', self.pop)
 
-        for Generation in range(self.NGen):
-            # Each iteration is a new generation
-            print(f"Generation {Generation}")
+        while len(self.pop) >= 3:
+            Generation += 1            
+            # elite offspring 
+            elite = self.toolbox.select(self.pop, int(len(self.pop)*self.elitPortion))  
+            elite = list(map(self.toolbox.clone, elite))
+            
+            # Select crossover offspring
+            crossover = self.toolbox.select(self.pop, int(len(self.pop)*self.crossPortion))  
+            crossover = list(map(self.toolbox.clone, crossover))
+            random.shuffle(crossover)
 
-            # Compute Generation statistics
-            #recording = stats.compile(pop)
-            #log.record(**{'Generation':Generation, 'Fits': recording})
-            #print(log.chapters['Fits'].select('avg'))
-
-            # Select offspring
-            Elite = self.toolbox.select(self.pop, self.EliteSize)  
-            Elite = list(map(self.toolbox.clone, Elite))  # clones offsprings
-
-            Crossover = self.toolbox.select(self.pop, self.CrossSize) # select individuals for crossover
-            Crossover = list(map(self.toolbox.clone, Crossover)) # clone offspring
-            random.shuffle(Crossover)
-
-            Mutants = self.toolbox.select(self.pop, self.MutSize) # select individuals to mutate
-            Mutants = list(map(self.toolbox.clone, Mutants))
-
-            Rest = tools.selRandom(self.pop, self.RestSize) # select the resting individuals
-            Rest = list(map(self.toolbox.clone, Rest))
-            random.shuffle(Rest)
-
-            # Select half of Rest Population for mutation and other half for 
-            # Crossover
-            SplitRestN = int(self.RestSize*0.5)
-            crossRest = Rest[:SplitRestN]
-            mutRest = Rest[SplitRestN:]
-
-            # Apply crossover
-            Crossover = self.applyCrossover(Crossover)
-            crossRest = self.applyCrossover(crossRest)
-
-            # Apply mutation
-            Mutants = self.applyMutation(Mutants)
-            mutRest = self.applyMutation(mutRest)
+            # Select crossover offspring
+            mutants = self.toolbox.select(self.pop, int(len(self.pop)*self.mutPortion))  
+            mutants = list(map(self.toolbox.clone, mutants))
+            
+            # Apply crossover and mutation
+            self.applyCrossover(crossover)
+            self.applyMutation(mutants)
 
             # Replace Population with new Individuals
-            self.pop = Elite + Crossover + Mutants + crossRest + mutRest
+            self.pop = elite + crossover + mutants
 
             # Find invalid fitness values in offspring
             invalid_ind = [ind for ind in self.pop if not ind.fitness.valid]
 
-            # Reevaluate the fitness of offspring
+            # Reevaluate the fitness of invalid offspring
             with Pool(processes=20) as p:
                 wc_results = p.map(self.toolbox.model, invalid_ind)
                 fitnesses = p.map(self.getFit, wc_results)
@@ -198,8 +174,9 @@ class optimization():
             # Reasign Fitness Value
             for ind, fit in zip(invalid_ind, fitnesses):
                 ind.fitness.values = (fit,)
-
+            
             fits = [ind.fitness.values[0] for ind in self.pop]
+            print(f"Generation {Generation}, size {len(self.pop)}")
             print('Mean Fit: ', np.mean(fits))
             print('Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
             print('Population: ', self.pop)
@@ -209,38 +186,35 @@ class optimization():
         Applies CrossOver function to list of individuals that is passed in 
         :return list of individuals 
         """
-        children = []
         for ind1, ind2 in zip(Individuals[::2], Individuals[1::2]):
             if np.random.rand() < self.CxPB:
                 (child1, child2) = self.toolbox.mate(ind1, ind2)
                 del child1.fitness.values
                 del child2.fitness.values
-                children.extend([child1, child2])
-        return children
 
     def applyMutation(self, Individuals):
         """
         Apply Mutation to list of individuals that is passed in
         :return list of individuals
         """
-        mutants = []
         for mutant in Individuals:
             if np.random.rand() < self.MutPB:
                 # indpb is the probability for each attribute to be mutated
-                self.toolbox.mutate(mutant, 0)
+                self.toolbox.mutate(mutant)
                 mutant[:] = np.round(mutant,4)
                 # Reset values that are outside ParamRange
                 mutant[:] = [value if low<=value<=up else min(max(value, low), up) 
                             for (low, up), value in zip(self.ParamRanges.values(), mutant[:])]
                 del mutant.fitness.values            
-                mutants.append(mutant)
-        return mutants
 
     def _parallel_wc(self, params):
         """
         Runs the wilson cowan model. Filters it to the alpha frequency band
         and caclulates the fitting matrix - FC or CCD
         """
+        # Set random seed
+        random.seed(0)
+        # Init Model
         wc = WCModel(Cmat = self.Cmat, Dmat = self.Dmat)
         # set fix parameter 
         for key, parameter in self.fixedParams.items():
