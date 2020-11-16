@@ -11,20 +11,23 @@ from SignalAnalysis import Signal
 import scipy
 
 class optimization():
-    def __init__(self, DataFile, method='FC'):
+    def __init__(self, DataFile, mode='FC', method='corr'):
         """
         Loads Data and set parameters for evolution. 
         Initialiazes first generation. 
-        :params Empiric Data File
+        :params Datafile - Empiric Data File
+        :params mode, 'FC' or 'CCD'
+        :params method, 'corr' or 'ksd'
         """
         print('Setting up optimization.')
-        assert method in ['FC', 'CCD'], 'Fitting must be FC or CCD'
-        self.method = method  
+        assert (mode in ['FC', 'CCD'] and method in ['corr', 'ksd']), 'Method must be FC or CCD  and mode corr or ksd'
+        self.method = method 
+        self.mode = mode 
         # Load empirical Data
         self.empMat = np.load(DataFile)
         self.lowpass = 0.2
         
-        if method == 'FC':
+        if mode == 'FC':
             # Delete subcortical regions: 
                 #Hippocampus: 41 - 44
                 #Amygdala: 45-46
@@ -39,7 +42,6 @@ class optimization():
         # Params that get optimized, keys must be equal to wc parameter names
         # NMDA Parameters: exc_ext, c_excinh
         # Gaba Parameters: c_inhinh, c_inhexc
-        #self.ParamRanges = OrderedDict({'sigma_ou': [0.001, 0.01], 'exc_ext':[0.5,0.75], 'c_excinh':[13.0,18.0], 'c_inhexc':[13.0,18.0], 'c_inhinh':[1.0,5.0]})          
         self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'exc_ext':[0.45,0.9]})
 
         # Setup genetic algorithm and wc simulator
@@ -74,8 +76,11 @@ class optimization():
         self.mutPortion = 0.4
         self.elitPortion = 0.1
 
+        # rank selection parameter s
         self.cx_s = 1.5
+        self.cx_u = 3
         self.mut_s = 1.5
+        self.mut_u = 3
         
         # Genetic Operations
         # Register genetic operators with default arguments in toolbox
@@ -86,7 +91,7 @@ class optimization():
         self.toolbox.register("evaluate", self.getFit)                
         
         self.toolbox.register("mutate", self.mutate)                      
-        self.toolbox.register("mate", self.crossover)
+        self.toolbox.register("mate", self.mate)
 
     def _initializePopulation(self):
         """
@@ -94,10 +99,10 @@ class optimization():
         """
         # create individuals
         # Using FC, the correlation between FC matrices is maximized
-        if self.method == 'FC':
+        if self.method == 'corr':
             creator.create("FitnessMax", base.Fitness, weights=(1.0,))
             creator.create("Individual", list, fitness=creator.FitnessMax)
-        elif self.method == 'CCD':
+        elif self.method == 'ksd':
         # Using CCD, the correlation between FC matrices is minimized
             creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
             creator.create("Individual", list, fitness=creator.FitnessMin)
@@ -152,18 +157,18 @@ class optimization():
             print('Mean Fit: ', np.mean(fits))
             print('Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
 
-            # Select crossover offspring
-            crossover = self.toolbox.selRank(self.pop, self.cx_s)  
-            crossover = list(map(self.toolbox.clone, crossover))
-            random.shuffle(crossover)
-            # Select crossover offspring
-            mutants = self.toolbox.selRank(self.pop, self.mut_s)  
+            # Select parents
+            parents = self.toolbox.selRank(self.pop, s=self.cx_s, u=self.cx_u)  
+            parents = list(map(self.toolbox.clone, parents))
+            random.shuffle(parents)
+            # Select mutants 
+            mutants = self.toolbox.selRank(self.pop, s=self.mut_s, u=self.mut_u)  
             mutants = list(map(self.toolbox.clone, mutants))
             
-            # Apply crossover and mutation
-            self.toolbox.mate(crossover)
+            # Apply mate and mutation
+            self.toolbox.mate(parents)
             self.toolbox.mutate(mutants)
-            offspring = mutants + crossover 
+            offspring = mutants + parents 
             
             # Find invalid fitness values in offspring
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
@@ -180,9 +185,11 @@ class optimization():
             # Merge old and new population
             self.pop = offspring + self.pop            
         
-    def selRank(self, population, s):
+    def selRank(self, population, s, u):
         """
-        Rank based Selection as described in Introduction to Evolutionary Computing p.82
+        Rank based Selection as described in 'Introduction to Evolutionary Computing' p.82
+        :params s parameter of the rank selection - suggested 1.5
+        :params u parameter of the rank selection - number of offspring of fittest individual
         """
         # Rank fits
         fits = [ind.fitness.values[0] for ind in population]
@@ -191,14 +198,13 @@ class optimization():
         ranks[idx] = np.arange(len(fits))
 
         # Calculate Selection Probability and select individuals
-        u =  3
         selProbs = [(2-s)/u + (2*rank*(s - 1))/(u*(u-1)) for rank in ranks]
         selected = [ind for prob, ind in zip(selProbs, population) if np.random.rand()<=prob]        
         return selected
         
-    def crossover(self, Individuals):
+    def mate(self, Individuals):
         """
-        Applies CrossOver function to list of individuals that is passed in 
+        Applies CrossOver function to list of individuals 
         """
         for child1, child2 in zip(Individuals[::2], Individuals[1::2]):
             tools.cxBlend(child1, child2, alpha=0.5)
@@ -212,10 +218,11 @@ class optimization():
 
     def mutate(self, Individuals):
         """
-        Apply Mutation to list of individuals that is passed in
+        Apply Mutation to list of individuals
         """
         for mutant in Individuals:
             # Sigma of gaussian distribution with which attributes are mutated
+            # Sigma is choosen following the range of the parameter and its fitting value (high fits -> small sigma)
             mutSigma = [(up-low)/2 for low,up in self.ParamRanges.values()]
             if mutant.fitness.weights[0]==1.0:
                 mutSigma = list(np.array(1-mutant.fitness.values[0])*np.array(mutSigma))
@@ -254,7 +261,7 @@ class optimization():
         # transform to signal
         signal = Signal(exc_tc, fsample=self.simfsample, lowpass=self.lowpass)
         # Calculate FC or CCD matrix on signal
-        mat = getattr(signal, 'get'+self.method)(Limits=self.FreqBand, conn_mode='lowpass-corr')
+        mat = getattr(signal, 'get'+self.mode)(Limits=self.FreqBand, conn_mode='lowpass-corr')
         return mat
 
     def getFit(self, simMat):
@@ -262,7 +269,7 @@ class optimization():
         Evaluates the fit of each subject in the population
         """
         # Fit FC using correlation Coefficient between empirical and simulated Data
-        if self.method == 'FC': 
+        if self.method == 'corr': 
             # Calculate Correlation between empirical and simulated FC
             simFC = simMat
             empFC = self.empMat
@@ -277,7 +284,7 @@ class optimization():
             return corr
         
         # Fit CCD using KSD distance
-        elif fitting == 'CCD': 
+        elif self.method == 'ksd': 
             dist = self._getKSD(self.empMat, simVal)
             return dist
     
