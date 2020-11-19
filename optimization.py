@@ -1,13 +1,13 @@
 from deap import creator, base, tools
-import random
 from multiprocessing import Pool
 import numpy as np
-from time import time
-import time
+from datetime import datetime
+import time, pickle, random, sys
+sys.path.append('/mnt/raid/data/SFB1315/SCZ/rsMEG/code/Signal')
+from SignalAnalysis import Signal
 from collections import OrderedDict
 from neurolib.utils.loadData import Dataset
 from neurolib.models.wc import WCModel
-from SignalAnalysis import Signal
 import scipy
 
 class optimization():
@@ -20,33 +20,34 @@ class optimization():
         :params method, 'corr' or 'ksd'
         """
         print('Setting up optimization.')
-        assert (mode in ['FC', 'CCD'] and method in ['corr', 'ksd']), 'Method must be FC or CCD  and mode corr or ksd'
+        assert (mode in ['FC', 'CCD'] and method in ['corr', 'ksd']), 'Mode must be FC or CCD  and method corr or ksd.'
+        assert not ((mode=='CCD') & (method == 'corr')), 'For CCD data you can only use the ksd method.'
         self.method = method 
         self.mode = mode 
+        
         # Load empirical Data
-        self.empMat = np.load(DataFile)
+        print('Data File ', DataFile.split('/')[-1])
+        self.empData = np.load(DataFile)
         self.lowpass = 0.2
         
+        # exclude Subcortical regions
         if mode == 'FC':
-            # Delete subcortical regions: 
-                #Hippocampus: 41 - 44
-                #Amygdala: 45-46
-                #Basal Ganglia: 75-80
-                #Thalamus: 81-82
+            # Subcortical regions: Hippocampus: 41 - 44, Amygdala: 45-46, Basal Ganglia: 75-80, Thalamus: 81-82
             # Attention: AAL indices start with 1
             exclude = list(range(40,44)) + list(range(44,46)) + list(range(74,80)) + list(range(80,82))
-            self.empMat = np.delete(self.empMat, exclude, axis=0)
-            self.empMat = np.delete(self.empMat, exclude, axis=1)
+            self.empData = np.delete(self.empData, exclude, axis=0)
+            self.empData = np.delete(self.empData, exclude, axis=1)
 
-        # Wilson Cowan Parameter Ranges that get optimized
-        # Params that get optimized, keys must be equal to wc parameter names
+        # Wilson Cowan Parameter Ranges that get optimized, keys must be equal to wc parameter names
         # NMDA Parameters: exc_ext, c_excinh
         # Gaba Parameters: c_inhinh, c_inhexc
         self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'exc_ext':[0.45,0.9]})
+        print('Fitting Parameters and Parameter Ranges ', self.ParamRanges)
 
         # Setup genetic algorithm and wc simulator
         self._setup_ga()
-        self._setup_wc() 
+        self._setup_wc()         
+        self.logbook.record(fittingparams=self.ParamRanges)
 
     def _setup_wc(self):
         """
@@ -59,8 +60,9 @@ class optimization():
         # Time in milliseconds
         self.simdt = 1.
         self.simfsample = (1./self.simdt) * 1000
-        self.fixedParams = {'duration':2.0*60.0*1000, 'dt':self.simdt}
+        self.fixedParams = {'duration':3.0*60*1000, 'dt':self.simdt}
         self.FreqBand = [8, 12]
+        self.logbook.record(freq=self.FreqBand, defaultparams=WCModel().params, ficedparams=self.fixedParams)
         
     def _setup_ga(self):
         """
@@ -70,7 +72,7 @@ class optimization():
         self._initializePopulation()
         # genetic algorithm settings
         self.NPopinit = 20
-        self.NPop = 10
+        self.NPop = 15
         self.NGen = 10 
         self.crossPortion = 0.4
         self.mutPortion = 0.4
@@ -93,6 +95,11 @@ class optimization():
         self.toolbox.register("mutate", self.mutate)                      
         self.toolbox.register("mate", self.mate)
 
+        # Logbook 
+        self.logbook = tools.Logbook()
+        self.logfile = "logs/" + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".pkl"
+        self.outputfile = "results/" + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".npy"
+
     def _initializePopulation(self):
         """
         Initializes the population
@@ -102,8 +109,8 @@ class optimization():
         if self.method == 'corr':
             creator.create("FitnessMax", base.Fitness, weights=(1.0,))
             creator.create("Individual", list, fitness=creator.FitnessMax)
-        elif self.method == 'ksd':
         # Using CCD, the correlation between FC matrices is minimized
+        elif self.method == 'ksd':
             creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
             creator.create("Individual", list, fitness=creator.FitnessMin)
         
@@ -124,38 +131,72 @@ class optimization():
             RandParams.append(rparameter)
         Individual = individual(RandParams)
         return Individual
+    
+    def _bestfit(self, fitnesses):
+        """
+        Helper function that returns best fit with respect to the used method. 
+        ksd -> min, corr -> max
+        """
+        if self.method == 'corr':
+            return np.max(fitnesses)
+        elif self.method == 'ksd': 
+            return np.min(fitnesses)
+
+    def _argbestfit(self,fitnesses): 
+        """
+        Helper function that returns index of the best fit with respect to the used method. 
+        ksd -> min, corr -> max
+        """
+        if self.method == 'corr':
+            return np.argmax(fitnesses)
+        elif self.method == 'ksd': 
+            return np.argmin(fitnesses)
+    
+    def _logStats(self, generation): 
+        """
+        Save generation stats to logbook
+        """        
+        fits =  [ind.fitness.values[0] for ind in self.pop]
+        best_ind = [ind for ind in self.toolbox.selBest(self.pop, 15)]
+        record = {'avg': np.mean(fits), 'sd': np.std(fits),
+                'max': {'fits': np.max(fits), 'params': self.pop[np.argmax(fits)][:]},
+                'min': {'fits': np.min(fits), 'params': self.pop[np.argmin(fits)][:]},
+                'best individuals': {'fits':[ind.fitness.values[0] for ind in best_ind], 'params':[ind[:] for ind in best_ind]}}
+        self.logbook.record(gen=generation, individuals=len(self.pop), **record)
 
     def optimize(self):
         """
         Main Function. Fits/optimizes the wilson cowan model with respect
         to the empirical data
         """
-        print('Started Optimization.')
+        print('Started Optimization.\nInitial Generation')
+        start = time.time()
         # Create the Population with n individuals
         self.pop = self.toolbox.population(n=self.NPopinit)
-
         # Compute Wilson Cowan Model for individuals in initial population
         with Pool(processes=20) as p:
             wc_results = p.map(self.toolbox.model, self.pop)
             fitnesses = p.map(self.toolbox.evaluate, wc_results)
-
+        
+        # Save highest fit array
+        bestidx = self._argbestfit([fitnesses])
+        np.save(self.outputfile, wc_results[bestidx])
+        
         # Assign fitness value to each individual in the pop
         for ind, fit in zip(self.pop, fitnesses):
-            ind.fitness.values = (fit,)  
+            ind.fitness.values = (fit,)         
+        self._logStats(generation = 0)
 
-        fits = [ind.fitness.values[0] for ind in self.pop]
-        print(f"Initial Generation, Size {len(self.pop)}")
-        print('Initial Mean Fit: ', np.mean(fits))
-        print('Initial Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
-
-        for Generation in range(self.NGen):  
+        for generation in range(1, self.NGen):  
+            print('Generation: ', generation)
             # Select best NPop individuals
             self.pop = self.toolbox.selBest(self.pop, self.NPop)
-            fits = [ind.fitness.values[0] for ind in self.pop]
+            self._logStats(generation=generation)
             
-            print(f"Generation {Generation}, Size {len(self.pop)}")
-            print('Mean Fit: ', np.mean(fits))
-            print('Max Fit: ', np.max(fits), ', Parameters: ', self.pop[np.argmax(fits)])
+            # Print best Fits
+            bestfit = self._bestfit([ind.fitness.values[0] for ind in self.pop])
+            print(f"Mean Fit: {self.logbook.select('avg')[-1]}")
+            print(f"Best Fit: {bestfit}")
 
             # Select parents
             parents = self.toolbox.selRank(self.pop, s=self.cx_s, u=self.cx_u)  
@@ -174,16 +215,34 @@ class optimization():
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
 
             # Reevaluate the fitness of invalid offspring
-            with Pool(processes=20) as p:
+            with Pool(processes=15) as p:
                 wc_results = p.map(self.toolbox.model, invalid_ind)
                 fitnesses = p.map(self.toolbox.evaluate, wc_results)
+            
+            # Save Array with highest fit
+            if self._bestfit(fitnesses+[bestfit]) != bestfit:
+                bestidx = self._argbestfit(fitnesses)
+                np.save(self.outputfile, wc_results[bestidx])
 
             # Reasign Fitness Value
             for ind, fit in zip(invalid_ind, fitnesses):
                 ind.fitness.values = (fit,)
 
             # Merge old and new population
-            self.pop = offspring + self.pop            
+            self.pop = offspring + self.pop
+
+        # Evaluate Last Generation and Print final best fit
+        print('Last Generation Completed.')
+        self.pop = self.toolbox.selBest(self.pop, self.NPop)
+        self._logStats(generation=generation+1) 
+        bestfit = self._bestfit([ind.fitness.values[0] for ind in self.pop])
+        print(f"Mean Fit: {self.logbook.select('avg')[-1]}")
+        print(f"Best Fit: {bestfit}")   
+
+        # Save logbook to file
+        with open(self.logfile, 'wb') as file: 
+            pickle.dump(self.logbook, file, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f'Optimization Done.\nTime: {time.time()-start}')       
         
     def selRank(self, population, s, u):
         """
@@ -261,7 +320,11 @@ class optimization():
         # transform to signal
         signal = Signal(exc_tc, fsample=self.simfsample, lowpass=self.lowpass)
         # Calculate FC or CCD matrix on signal
-        mat = getattr(signal, 'get'+self.mode)(Limits=self.FreqBand, conn_mode='lowpass-corr')
+        if self.mode == 'FC': 
+            mat = signal.getEnvFC(Limits=self.FreqBand, conn_mode='lowpass-corr')
+        elif self.mode == 'CCD': 
+            mat = signal.getCCD(Limits=self.FreqBand)
+        
         return mat
 
     def getFit(self, simMat):
@@ -272,20 +335,17 @@ class optimization():
         if self.method == 'corr': 
             # Calculate Correlation between empirical and simulated FC
             simFC = simMat
-            empFC = self.empMat
-            
+            empFC = self.empData            
             rows = empFC.shape[-1]
             idx = np.triu_indices(rows, k=1)
-
             empValues = empFC[idx]
             simValues = simFC[idx]
-
             corr, _ = scipy.stats.pearsonr(empValues, simValues)
             return corr
         
         # Fit CCD using KSD distance
         elif self.method == 'ksd': 
-            dist = self._getKSD(self.empMat, simVal)
+            dist = self._getKSD(simMat)
             return dist
     
     def _getKSD(self, simMat):
@@ -295,24 +355,26 @@ class optimization():
         :return: KS distance between simulated and empirical data
         """
         from scipy.stats import ks_2samp
-        if self.empMat.shape != simMat.shape:
-            raise ValueError("Input matrices must have the same shape.")
-
-        rows = self.empMat.shape[-1]
-        idx = np.triu_indices(rows, k=1)
-
-        empValues = self.empMat[idx]
-        simValues = simMat[idx]
-
-        # Bin values
-        bins = np.arange(0,1,0.01)
-        simIdx = np.digitize(simValues, bins)
-        empIdx = np.digitize(empValues, bins)
-
-        binnedSim = bins[simIdx-1]
-        binnedEmp = bins[empIdx-1]
-
-        KSD = ks_2samp(binnedEmp, binnedSim)[0] # Omits the p-value and outputs the KSD distance
-        return KSD
-
+        # Get Histogram of empirical and simulated Data
+        simhist = self._get_hist_distr(simMat)
+        if self.mode == 'FC':
+            emphist = self._get_hist_distr(self.empData)
+        elif self.mode == 'CCD': 
+            emphist = self.empData        
+        distance, _ = ks_2samp(emphist, simhist) # Omits the p-value and outputs the KSD distance
+        return distance
     
+    def _get_hist_distr(self, data):
+        """
+        Calculates the histogram distribution of data. 
+        This function is used for KSD computation.
+        :params data, symmetric matrix as nd.array
+        :returns array with histogram values
+        """
+        # Get histogramm 
+        hist_idx = np.triu_indices(data.shape[0], k=1)
+        hist, bin_edges = np.histogram(data[hist_idx], bins=np.arange(0,1,0.001))
+        # midpoint of bin_edges 
+        bins = bin_edges[:-1] + np.diff(bin_edges)/2
+        hist_distr = np.repeat(bins, hist.astype('int'))
+        return hist_distr     
