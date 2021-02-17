@@ -35,10 +35,10 @@ def get_wc_stats(tc, fsample):
     spect, freqs = get_spectrum(tc, fsample)
     max_freq = freqs[spect==np.max(spect)]
     gamma = np.sum(spect[(freqs>=30) & (freqs<=46)])
-    stats = [max_val, min_val, diff, gamma, max_freq]
+    stats = {'Max': max_val, 'Min': min_val, 'Diff': diff, 'Gamma': gamma, 'Max_Freq': max_freq}
     return stats
 
-def evaluate_wc(params, stats=True):
+def evaluate_wc(params):
     """
     Function to run wc model with parameter settings
     """
@@ -48,7 +48,7 @@ def evaluate_wc(params, stats=True):
     wc = WCModel() 
     # Set the duration parameter two second
     time = 2.*1000
-    fsample = 10000.
+    fsample = 1/wc.params['dt'] # 10000.
     wc.params['duration'] = time
     # Run model with parameter setting
     for key, value in params.items():
@@ -56,12 +56,9 @@ def evaluate_wc(params, stats=True):
     wc.run()
     exc_tc = wc.outputs.exc[0,100:]
     inh_tc = wc.outputs.inh[0,100:]
-    if stats: 
-        stats = get_wc_stats(exc_tc, fsample)
-        return stats
-    else:
-        spect, freq = get_spectrum(exc_tc, fsample)
-        return [exc_tc, inh_tc, spect, freq] 
+    stats = get_stats(exc_tc, fsample)
+    spect, freq = get_spectrum(exc_tc, fsample)
+    return [exc_tc, inh_tc, spect, freq] 
 
 
 def plot_default_wc(filename, n_simulations):

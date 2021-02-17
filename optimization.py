@@ -25,6 +25,8 @@ class optimization():
         self.method = method 
         self.mode = mode 
         
+        random.seed(0)
+        
         # Load empirical Data
         print('Data File ', DataFile.split('/')[-1])
         self.empData = np.load(DataFile)
@@ -34,20 +36,27 @@ class optimization():
         if mode == 'FC':
             # Subcortical regions: Hippocampus: 41 - 44, Amygdala: 45-46, Basal Ganglia: 75-80, Thalamus: 81-82
             # Attention: AAL indices start with 1
-            exclude = list(range(40,44)) + list(range(44,46)) + list(range(74,80)) + list(range(80,82))
+            exclude = list(range(40,46)) + list(range(74,82))
             self.empData = np.delete(self.empData, exclude, axis=0)
             self.empData = np.delete(self.empData, exclude, axis=1)
 
         # Wilson Cowan Parameter Ranges that get optimized, keys must be equal to wc parameter names
         # NMDA Parameters: exc_ext, c_excinh
         # Gaba Parameters: c_inhinh, c_inhexc
-        self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'exc_ext':[0.45,0.9]})
+        # self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'exc_ext':[0.45,0.9]})
+        #self.ParamRanges = OrderedDict({'sigma_ou':[0.001, 0.25], 'K_gl':[0.0, 5.0], 'f_gaba':[0.,1.], 'f_nmda':[0.,1.]})
+        self.ParamRanges = OrderedDict({'K_gl':[0.0, 5.0], 'f_nmda':[0.,1.], 'f_gaba':[0.,1.]})
         print('Fitting Parameters and Parameter Ranges ', self.ParamRanges)
+
+        # Output Files
+        self.logfile = "logs/" + mode + '.' + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".pkl"
+        self.outputfile = "results/" + mode + '.' + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".npy"
 
         # Setup genetic algorithm and wc simulator
         self._setup_ga()
         self._setup_wc()         
         self.logbook.record(fittingparams=self.ParamRanges)
+        self.processes = 25
 
     def _setup_wc(self):
         """
@@ -60,9 +69,10 @@ class optimization():
         # Time in milliseconds
         self.simdt = 1.
         self.simfsample = (1./self.simdt) * 1000
-        self.fixedParams = {'duration':3.0*60*1000, 'dt':self.simdt}
+        self.fixedParams = {'duration':3.0*60*1000, 'dt':self.simdt, 'exc_ext':0.5, 'sigma_ou':0.01}
+        #self.fixedParams = {'duration':3.0*60*1000, 'dt':self.simdt}
         self.FreqBand = [8, 12]
-        self.logbook.record(freq=self.FreqBand, defaultparams=WCModel().params, ficedparams=self.fixedParams)
+        self.logbook.record(freq=self.FreqBand, defaultparams=WCModel().params, fixedparams=self.fixedParams)
         
     def _setup_ga(self):
         """
@@ -71,9 +81,9 @@ class optimization():
         self.toolbox = base.Toolbox()
         self._initializePopulation()
         # genetic algorithm settings
-        self.NPopinit = 20
-        self.NPop = 15
-        self.NGen = 10 
+        self.NPopinit = 100
+        self.NPop = 50
+        self.NGen = 50 
         self.crossPortion = 0.4
         self.mutPortion = 0.4
         self.elitPortion = 0.1
@@ -97,8 +107,6 @@ class optimization():
 
         # Logbook 
         self.logbook = tools.Logbook()
-        self.logfile = "logs/" + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".pkl"
-        self.outputfile = "results/" + datetime.now().strftime("%d.%m.%Y.%H.%M.%S") + ".npy"
 
     def _initializePopulation(self):
         """
@@ -157,7 +165,7 @@ class optimization():
         Save generation stats to logbook
         """        
         fits =  [ind.fitness.values[0] for ind in self.pop]
-        best_ind = [ind for ind in self.toolbox.selBest(self.pop, 15)]
+        best_ind = [ind for ind in self.toolbox.selBest(self.pop, 50)]
         record = {'avg': np.mean(fits), 'sd': np.std(fits),
                 'max': {'fits': np.max(fits), 'params': self.pop[np.argmax(fits)][:]},
                 'min': {'fits': np.min(fits), 'params': self.pop[np.argmin(fits)][:]},
@@ -197,6 +205,7 @@ class optimization():
             bestfit = self._bestfit([ind.fitness.values[0] for ind in self.pop])
             print(f"Mean Fit: {self.logbook.select('avg')[-1]}")
             print(f"Best Fit: {bestfit}")
+            print(f"Best Ind: {self.toolbox.selBest(self.pop, 1)[0]}")
 
             # Select parents
             parents = self.toolbox.selRank(self.pop, s=self.cx_s, u=self.cx_u)  
@@ -215,7 +224,7 @@ class optimization():
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
 
             # Reevaluate the fitness of invalid offspring
-            with Pool(processes=15) as p:
+            with Pool(processes=self.processes) as p:
                 wc_results = p.map(self.toolbox.model, invalid_ind)
                 fitnesses = p.map(self.toolbox.evaluate, wc_results)
             
@@ -238,6 +247,7 @@ class optimization():
         bestfit = self._bestfit([ind.fitness.values[0] for ind in self.pop])
         print(f"Mean Fit: {self.logbook.select('avg')[-1]}")
         print(f"Best Fit: {bestfit}")   
+        print(f"Best Ind: {self.toolbox.selBest(self.pop, 1)[0]}")
 
         # Save logbook to file
         with open(self.logfile, 'wb') as file: 
@@ -269,7 +279,7 @@ class optimization():
             tools.cxBlend(child1, child2, alpha=0.5)
             # Reset values that are outside ParamRange
             for child in [child1, child2]: 
-                child[:] = [value if low<=value<=up else min(max(value, low), up) 
+                child[:] = [value if low<=value<=up else low + np.random.rand()*(up-low)
                             for (low, up), value in zip(self.ParamRanges.values(), child[:])]
                 child[:] = np.round(child,4)            
             del child1.fitness.values
@@ -282,18 +292,46 @@ class optimization():
         for mutant in Individuals:
             # Sigma of gaussian distribution with which attributes are mutated
             # Sigma is choosen following the range of the parameter and its fitting value (high fits -> small sigma)
-            mutSigma = [(up-low)/2 for low,up in self.ParamRanges.values()]
+            # Minimal weighting value is 0.3
+            mutSigma = [up-low for low,up in self.ParamRanges.values()]
             if mutant.fitness.weights[0]==1.0:
-                mutSigma = list(np.array(1-mutant.fitness.values[0])*np.array(mutSigma))
+                weight = np.array(1-mutant.fitness.values[0])
+                weight[weight<0.3] = 0.3
+                mutSigma = list(weight*np.array(mutSigma))
             else: 
-                mutSigma = list(np.array(mutant.fitness.values[0])*np.array(mutSigma))
+                weight = np.array(mutant.fitness.values[0])
+                weight[weight<0.3] = 0.3
+                mutSigma = list(weight*np.array(mutSigma))
             # indpb is the probability for each attribute to be mutated                
             tools.mutGaussian(mutant, mu=0, sigma=mutSigma, indpb=0.5)
             mutant[:] = np.round(mutant,4)
             # Reset values that are outside ParamRange
-            mutant[:] = [value if low<=value<=up else min(max(value, low), up) 
+            mutant[:] = [value if low<=value<=up else low + np.random.rand()*(up-low)
                         for (low, up), value in zip(self.ParamRanges.values(), mutant[:])]
-            del mutant.fitness.values            
+            del mutant.fitness.values
+
+    def f_gaba(self, param): 
+        """
+        Function to translate f_gaba factor to WC-parameter space
+        """
+        c_ie_range = [8, 16]
+        c_ii_range = [0, 6]
+        c_ie = np.min(c_ie_range) + float(np.diff(c_ie_range)) * param
+        c_ii = np.min(c_ii_range) + float(np.diff(c_ii_range)) * param
+        return c_ie, c_ii
+    
+    def f_nmda(self, param):
+        """
+        Function to translate f_nmda factor to WC-parameter space
+        """
+        #p_e_range = [0.45, 0.9]
+        #p_i_range = [0, 0.01]
+        c_ei_range = [5, 20]
+        #p_e = np.min(p_e_range) + float(np.diff(p_e_range)) * param
+        #p_i = np.min(p_i_range) + float(np.diff(p_i_range)) * param
+        c_ei = np.min(c_ei_range) + float(np.diff(c_ei_range)) * param
+        #return p_e, c_ei           
+        return c_ei
 
     def _parallel_wc(self, params):
         """
@@ -301,16 +339,26 @@ class optimization():
         and caclulates the fitting matrix - FC or CCD
         """
         # Set random seed
-        random.seed(0)
+        #random.seed(0)
         # Init Model
         wc = WCModel(Cmat = self.Cmat, Dmat = self.Dmat)
         # set fix parameter 
-        for key, parameter in self.fixedParams.items():
-            wc.params[key] = parameter
+        for key, value in self.fixedParams.items():
+            wc.params[key] = value
+            if key == 'exc_ext':
+                wc.params[key] = np.repeat(value, wc.params['N'])
         # set individual parameter
         for key, value in zip(self.ParamRanges.keys(), params):
             if key == 'exc_ext':
                 wc.params[key] = np.repeat(value, wc.params['N'])
+            # Gaba and NMDA factors
+            elif key == 'f_gaba':
+                wc.params['c_inhexc'], wc.params['c_inhinh'] = self.f_gaba(value)
+            elif key == 'f_nmda':
+                wc.params['c_excinh'] = self.f_nmda(value)
+                #p_e, wc.params['c_excinh'] = self.f_nmda(value)
+                #wc.params['exc_ext'] = np.repeat(p_e, wc.params['N'])
+                #wc.params['inh_ext'] = np.repeat(p_i, wc.params['N'])                
             else:
                 wc.params[key] = value
         # run model
